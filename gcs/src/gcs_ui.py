@@ -2,97 +2,233 @@
 import sys
 import pyqtgraph as pg
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QPushButton, QLabel, QLineEdit, QGroupBox)
-from PyQt5.QtCore import QTimer
+                             QHBoxLayout, QPushButton, QLabel, QLineEdit, 
+                             QGroupBox, QGridLayout, QScrollArea)
+from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtGui import QFont, QColor
 from telemetry_core import TelemetryEngine
+
+# Map integers to explicit flight states
+FLIGHT_STATES = {
+    0: "BOOT", 1: "TEST_MODE", 2: "LAUNCH_PAD", 3: "ASCENT",
+    4: "ROCKET_DEPLOY", 5: "DESCENT", 6: "AEROBREAK_RELEASE", 7: "IMPACT"
+}
 
 class GCSDashboard(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("IN-SPACE CANSAT 2026 - Ground Control Station")
-        self.resize(1000, 700)
+        self.setWindowTitle("IN-SPACE CANSAT 2026 - Master GCS")
+        self.resize(1200, 800)
+        self.is_dark_mode = False
 
-        # Initialize the Data Engine (but don't start it yet)
         self.engine = None
-        
-        # Data arrays for the graph
-        self.time_data = []
-        self.alt_data = []
+        self.data = {
+            'time': [], 'alt': [], 'press': [], 'temp': [], 'volt': [],
+            'gyro': [], 'accel': [], 'lat': [], 'lon': [], 'gnss_alt': []
+        }
 
         self.init_ui()
 
-        # Set up the UI refresh timer (runs every 50ms)
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.poll_queue)
+        
+        # Start in Light Mode per Guidelines
+        self.apply_theme()
 
     def init_ui(self):
-        # Main Layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
 
-        # --- Top Bar: Connection & Commands ---
+        # ---------------------------------------------------------
+        # 1. TOP COMMAND DECK
+        # ---------------------------------------------------------
         top_layout = QHBoxLayout()
         
-        self.port_input = QLineEdit("/dev/pts/7") # Default for testing
-        self.port_input.setPlaceholderText("Enter Port (e.g., /dev/ttyUSB0)")
-        self.port_input.setFixedWidth(200)
+        self.port_input = QLineEdit("/dev/pts/7")
+        self.port_input.setPlaceholderText("Port...")
+        self.port_input.setFixedWidth(150)
         
         self.connect_btn = QPushButton("CONNECT")
         self.connect_btn.clicked.connect(self.toggle_connection)
         
-        self.cal_btn = QPushButton("CALIBRATE SENSORS")
+        self.cal_btn = QPushButton("CALIBRATE")
         self.cal_btn.clicked.connect(lambda: self.send_cmd("ALT_CAL"))
         self.cal_btn.setEnabled(False)
 
         self.start_btn = QPushButton("START TELEMETRY")
         self.start_btn.clicked.connect(lambda: self.send_cmd("START_TX"))
         self.start_btn.setEnabled(False)
+        
+        self.scale_btn = QPushButton("AUTO-SCALE GRAPHS")
+        self.scale_btn.clicked.connect(self.autoscale_graphs)
+        
+        self.theme_btn = QPushButton("TOGGLE DARK MODE")
+        self.theme_btn.clicked.connect(self.toggle_theme)
 
-        top_layout.addWidget(QLabel("Serial Port:"))
+        # Style Top Deck Buttons
+        for btn in [self.connect_btn, self.cal_btn, self.start_btn, self.scale_btn, self.theme_btn]:
+            btn.setMinimumHeight(40)
+            btn.setFont(QFont("Arial", 10, QFont.Bold))
+
         top_layout.addWidget(self.port_input)
         top_layout.addWidget(self.connect_btn)
-        top_layout.addStretch()
         top_layout.addWidget(self.cal_btn)
         top_layout.addWidget(self.start_btn)
+        top_layout.addStretch()
+        top_layout.addWidget(self.scale_btn)
+        top_layout.addWidget(self.theme_btn)
         
         main_layout.addLayout(top_layout)
 
-        # --- Middle: Data Readouts ---
-        data_group = QGroupBox("Live Telemetry")
-        data_layout = QHBoxLayout()
+        # ---------------------------------------------------------
+        # 2. SPACIOUS READOUT DECK
+        # ---------------------------------------------------------
+        self.readout_group = QGroupBox("Mission Status")
+        self.readout_group.setFont(QFont("Arial", 12, QFont.Bold))
+        readout_layout = QGridLayout()
+        readout_layout.setSpacing(20) # Add plenty of breathing room
         
-        self.lbl_time = QLabel("Mission Time: -- s")
-        self.lbl_alt = QLabel("Altitude: -- m")
-        self.lbl_state = QLabel("Flight State: --")
+        # Create Readout Labels
+        label_font = QFont("Arial", 16, QFont.Bold)
+        self.labels = {
+            "team": QLabel("TEAM: --"),
+            "time": QLabel("TIME: -- s"),
+            "state": QLabel("STATE: --"),
+            "sats": QLabel("SATS: --"),
+            "tx_cnt": QLabel("TX COUNT: --"),
+            "rx_cnt": QLabel("RX COUNT: --"),
+            "loss": QLabel("PACKET LOSS: 0"),
+            "gnss_time": QLabel("GNSS TIME: --")
+        }
         
-        # Make the text big and easy to read outside in the sun
-        font = self.lbl_time.font()
-        font.setPointSize(14)
-        font.setBold(True)
-        for lbl in [self.lbl_time, self.lbl_alt, self.lbl_state]:
-            lbl.setFont(font)
-            data_layout.addWidget(lbl)
-            
-        data_group.setLayout(data_layout)
-        main_layout.addWidget(data_group)
+        for lbl in self.labels.values():
+            lbl.setFont(label_font)
+            lbl.setAlignment(Qt.AlignCenter)
 
-        # --- Bottom: Real-Time Plotting ---
-        # pyqtgraph handles high-speed plotting perfectly
+        # Row 0: Critical Mission Data
+        readout_layout.addWidget(self.labels["team"], 0, 0)
+        readout_layout.addWidget(self.labels["time"], 0, 1)
+        readout_layout.addWidget(self.labels["state"], 0, 2)
+        readout_layout.addWidget(self.labels["sats"], 0, 3)
+        
+        # Row 1: Network Health Data
+        readout_layout.addWidget(self.labels["tx_cnt"], 1, 0)
+        readout_layout.addWidget(self.labels["rx_cnt"], 1, 1)
+        readout_layout.addWidget(self.labels["loss"], 1, 2)
+        readout_layout.addWidget(self.labels["gnss_time"], 1, 3)
+        
+        self.readout_group.setLayout(readout_layout)
+        main_layout.addWidget(self.readout_group)
+
+        # ---------------------------------------------------------
+        # 3. SCROLLABLE GRAPHING GRID
+        # ---------------------------------------------------------
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        
+        scroll_widget = QWidget()
+        grid_layout = QGridLayout(scroll_widget)
+        grid_layout.setSpacing(15)
+        
+        # Initialize Plots
         pg.setConfigOptions(antialias=True)
-        self.plot_widget = pg.PlotWidget(title="CANSAT Altitude vs Time")
-        self.plot_widget.setLabel('left', 'Altitude', units='m')
-        self.plot_widget.setLabel('bottom', 'Time', units='s')
-        self.plot_widget.showGrid(x=True, y=True)
+        self.plots = {}
+        self.curves = {}
         
-        # Create a line reference we will update later
-        self.alt_curve = self.plot_widget.plot(pen=pg.mkPen('y', width=2))
-        
-        main_layout.addWidget(self.plot_widget)
+        plot_configs = [
+            ("alt", "CANSAT Altitude", "Time (s)", "Altitude (m)"),
+            ("press", "Barometric Pressure", "Time (s)", "Pressure (Pa)"),
+            ("temp", "Temperature", "Time (s)", "Temp (°C)"),
+            ("volt", "Battery Voltage", "Time (s)", "Voltage (V)"),
+            ("gyro", "Gyro Spin Rate", "Time (s)", "Rate (deg/s)"),
+            ("accel", "Z-Axis Acceleration", "Time (s)", "Accel (m/s²)"),
+            ("gnss_alt", "GNSS Altitude", "Time (s)", "GNSS Alt (m)"),
+            ("lat", "GNSS Latitude", "Time (s)", "Latitude (°)"),
+            ("lon", "GNSS Longitude", "Time (s)", "Longitude (°)"),
+            ("map", "GNSS 2D Map (Offline)", "Longitude", "Latitude")
+        ]
+
+        row, col = 0, 0
+        for key, title, xlabel, ylabel in plot_configs:
+            p = pg.PlotWidget(title=title)
+
+            p.custom_title = title
+
+            p.setLabel('bottom', xlabel)
+            p.setLabel('left', ylabel)
+            p.showGrid(x=True, y=True)
+            # FORCE MIN HEIGHT: 2 rows of 350px fit nicely on most screens (4 graphs max visible)
+            p.setMinimumHeight(350) 
+            
+            # Scatter plot for the map, lines for the rest
+            if key == "map":
+                c = p.plot(pen=None, symbol='o', symbolSize=6, symbolBrush='b')
+            else:
+                c = p.plot(pen=pg.mkPen('b', width=2.5))
+                
+            self.plots[key] = p
+            self.curves[key] = c
+            
+            grid_layout.addWidget(p, row, col)
+            col += 1
+            if col > 1: # 2 Columns
+                col = 0
+                row += 1
+
+        scroll_area.setWidget(scroll_widget)
+        main_layout.addWidget(scroll_area)
+
+    # ---------------------------------------------------------
+    # UI ACTIONS
+    # ---------------------------------------------------------
+    def toggle_theme(self):
+        self.is_dark_mode = not self.is_dark_mode
+        self.apply_theme()
+
+    def apply_theme(self):
+        """Swaps the UI color palette without disrupting data."""
+        if self.is_dark_mode:
+            bg_color = QColor(30, 30, 30)
+            text_color = QColor(255, 255, 255)
+            graph_bg = 'k'
+            graph_fg = 'w'
+            line_color = 'y'
+        else: # Light Mode (Guidelines standard)
+            bg_color = QColor(240, 240, 240)
+            text_color = QColor(0, 0, 0)
+            graph_bg = 'w'
+            graph_fg = 'k'
+            line_color = 'b'
+
+        # Apply to main window
+        self.setStyleSheet(f"QMainWindow {{ background-color: {bg_color.name()}; }} "
+                           f"QLabel, QGroupBox {{ color: {text_color.name()}; }}")
+
+        # Apply to pyqtgraph widgets
+        for key, p in self.plots.items():
+            p.setBackground(graph_bg)
+            p.getAxis('bottom').setPen(graph_fg)
+            p.getAxis('left').setPen(graph_fg)
+            p.getAxis('bottom').setTextPen(graph_fg)
+            p.getAxis('left').setTextPen(graph_fg)
+            p.setTitle(p.custom_title, color=graph_fg)
+            #p.setTitle(p.titleLabel.text, color=graph_fg)
+
+            
+            # Update line colors (except for the map scatter plot)
+            if key == "map":
+                self.curves[key].setSymbolBrush(line_color)
+            else:
+                self.curves[key].setPen(pg.mkPen(line_color, width=2.5))
+
+    def autoscale_graphs(self):
+        """Forces all graphs to fit exactly to the currently received data."""
+        for p in self.plots.values():
+            p.enableAutoRange()
 
     def toggle_connection(self):
         if self.engine and self.engine.is_running:
-            # Disconnect
             self.update_timer.stop()
             self.engine.stop_listening()
             self.engine = None
@@ -101,12 +237,11 @@ class GCSDashboard(QMainWindow):
             self.cal_btn.setEnabled(False)
             self.start_btn.setEnabled(False)
         else:
-            # Connect
             port = self.port_input.text().strip()
             self.engine = TelemetryEngine(port=port)
             if self.engine.connect():
                 self.engine.start_listening()
-                self.update_timer.start(50) # Poll queue 20 times a second
+                self.update_timer.start(50) 
                 self.connect_btn.setText("DISCONNECT")
                 self.port_input.setEnabled(False)
                 self.cal_btn.setEnabled(True)
@@ -116,35 +251,65 @@ class GCSDashboard(QMainWindow):
         if self.engine:
             self.engine.send_command(cmd_str)
 
+    # ---------------------------------------------------------
+    # DATA PROCESSING & PLOTTING
+    # ---------------------------------------------------------
     def poll_queue(self):
-        """Checks the background engine queue for new data and updates the UI."""
         if not self.engine: return
         
         updated = False
-        # Drain the queue of all new packets
         while not self.engine.data_queue.empty():
-            data = self.engine.data_queue.get()
+            d = self.engine.data_queue.get()
             
-            # Update Text Labels
-            self.lbl_time.setText(f"Mission Time: {data['time']:.1f} s")
-            self.lbl_alt.setText(f"Altitude: {data['altitude']:.1f} m")
-            self.lbl_state.setText(f"Flight State: {data['state']}")
+            # Update Readout Deck
+            state_str = FLIGHT_STATES.get(d['state'], "UNKNOWN")
             
-            # Append data for the graph
-            self.time_data.append(data['time'])
-            self.alt_data.append(data['altitude'])
+            self.labels["team"].setText(f"TEAM: {d['team_id']}")
+            self.labels["time"].setText(f"TIME: {d['time']:.2f} s")
+            self.labels["state"].setText(f"STATE: {state_str}")
+            self.labels["sats"].setText(f"SATS: {d['sats']}")
+            self.labels["tx_cnt"].setText(f"TX COUNT: {d['tx_count']}")
+            self.labels["rx_cnt"].setText(f"RX COUNT: {d['rx_count']}")
+            self.labels["gnss_time"].setText(f"GNSS TIME: {d['gnss_time']}")
+            
+            # Red alert if packets are dropping
+            loss = d['lost_count']
+            if loss > 0:
+                self.labels["loss"].setStyleSheet("color: red;")
+            self.labels["loss"].setText(f"PACKET LOSS: {loss}")
+            
+            # Append to lists
+            self.data['time'].append(d['time'])
+            self.data['alt'].append(d['altitude'])
+            self.data['press'].append(d['pressure'])
+            self.data['temp'].append(d['temp'])
+            self.data['volt'].append(d['voltage'])
+            self.data['gyro'].append(d['gyro_spin'])
+            self.data['accel'].append(d['accel_z'])
+            self.data['gnss_alt'].append(d['gnss_alt'])
+            self.data['lat'].append(d['gnss_lat'])
+            self.data['lon'].append(d['gnss_lon'])
+            
             updated = True
             
-        # Only redraw the graph if we actually received new data points
         if updated:
-            self.alt_curve.setData(self.time_data, self.alt_data)
+            # Batch update all curves for performance
+            t = self.data['time']
+            self.curves['alt'].setData(t, self.data['alt'])
+            self.curves['press'].setData(t, self.data['press'])
+            self.curves['temp'].setData(t, self.data['temp'])
+            self.curves['volt'].setData(t, self.data['volt'])
+            self.curves['gyro'].setData(t, self.data['gyro'])
+            self.curves['accel'].setData(t, self.data['accel'])
+            self.curves['gnss_alt'].setData(t, self.data['gnss_alt'])
+            self.curves['lat'].setData(t, self.data['lat'])
+            self.curves['lon'].setData(t, self.data['lon'])
+            
+            # The Map takes Lon as X, Lat as Y
+            self.curves['map'].setData(self.data['lon'], self.data['lat'])
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    
-    # Optional: Force a dark style for better outdoor visibility
-    app.setStyle("Fusion")
-    
     window = GCSDashboard()
     window.show()
     sys.exit(app.exec_())
