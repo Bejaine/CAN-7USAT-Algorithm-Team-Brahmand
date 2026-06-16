@@ -6,6 +6,7 @@ cansat/
 └── gcs/
     ├── readme.md
     ├── requirements.txt
+    ├── data/
     └── src/
         ├── teensy_mock.py
         ├── telemetry_core.py
