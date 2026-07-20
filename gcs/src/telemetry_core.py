@@ -1,4 +1,3 @@
-# src/telemetry_core.py
 import serial
 import csv
 import time
@@ -6,7 +5,7 @@ import threading
 from queue import Queue
 
 class TelemetryEngine:
-    def __init__(self, port, baudrate=9600, team_id="2026-IN-SPACE-CAN-7USAT-008"):
+    def __init__(self, port, baudrate=9600, team_id="2026-IN-SPACE-CAN-7USAT-008", initial_rx=0, initial_loss=0, expected_tx=None):
         self.port = port
         self.baudrate = baudrate
         self.team_id = team_id
@@ -17,10 +16,9 @@ class TelemetryEngine:
         self.csv_filename = f"../data/Flight_{self.team_id}.csv"
         self.setup_csv()
         
-        # --- NEW: PACKET TRACKING METRICS ---
-        self.gcs_rx_count = 0
-        self.expected_tx_count = None
-        self.packets_lost = 0
+        self.gcs_rx_count = initial_rx
+        self.expected_tx_count = expected_tx
+        self.packets_lost = initial_loss
 
     def setup_csv(self):
         headers = [
