@@ -4,12 +4,17 @@
 cansat/
 ├── readme.md
 └── gcs/
+│   ├── readme.md
+│   ├── requirements.txt
+│   ├── data/
+│   └── src/
+│       ├── teensy_mock.py
+│       ├── telemetry_core.py
+│       └── gcs_ui.py
+└── fsw/
     ├── readme.md
-    ├── requirements.txt
-    ├── data/
-    └── src/
-        ├── teensy_mock.py
-        ├── telemetry_core.py
-        └── gcs_ui.py
+    └── teensy
+        ├── platformio.ini
+        └── fsw.cpp
 
 ```
